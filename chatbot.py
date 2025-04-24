@@ -278,6 +278,9 @@ def save_user_history(user_id: str, history):
         pickle.dump(history, f)
 
 def extract_chunks_from_pdfs(country):
+    # Remove any leading or trailing spaces from the country name
+    country = country.strip()
+
     folder_path = os.path.join("books", country)
     if not os.path.exists(folder_path):
         print(f"❌ Folder not found for country: {country}")
@@ -304,7 +307,6 @@ def extract_chunks_from_pdfs(country):
                 print(f"⚠️ Error reading {file}: {e}")
 
     return chunks, metadata
-
 
 
 def embed_texts(texts):
@@ -419,7 +421,16 @@ def get_response_from_general_knowledge(user_query, country, history=None):
     messages = [{"role": "system", "content": system_prompt}]
     if history:
         messages += history
+        
+    
     messages.append({"role": "user", "content": user_query})
+
+    # Add a final prompt to force the format
+    messages.append({
+        "role": "user",
+        "content": 'Please respond strictly in the required JSON format as specified.'
+    })
+
 
     print("🤖 Querying GPT-4o with general knowledge fallback prompt...")
     response = client.chat.completions.create(
@@ -451,6 +462,10 @@ def get_response_from_books(user_query, country, history=None):
             
             print("⚠️ No relevant chunks found. Falling back to general knowledge.")
             fallback_response_raw = get_response_from_general_knowledge(user_query, country, history)
+            print("get_response_from_general_knowledge")
+            print(f"user query :{user_query}")
+            print(f"country:{country}")
+            print(f"History:{history}")
             print(f"DEBUG: fallback_response_raw = {repr(fallback_response_raw)}")
             print(fallback_response_raw)
             print(type(fallback_response_raw)) 
@@ -512,6 +527,10 @@ def get_response_from_books(user_query, country, history=None):
     fallback_response_raw = get_response_from_general_knowledge(user_query, country, history)
     print("🔥 fallback_response_raw (type):", type(fallback_response_raw))
     print("🔥 fallback_response_raw (value):", fallback_response_raw)
+    print("get_response_from_general_knowledge")
+    print(f"user query :{user_query}")
+    print(f"country:{country}")
+    print(f"History:{history}")
 
     # Safe fallback parsing
     # Determine the type of the fallback
@@ -592,6 +611,9 @@ async def chat_with_bot(
     history.append({"role": "user", "content": message})
 
     result = get_response_from_books(message, country, history)
+    print("********************************")
+    print(f"printing the results:{result}")
+    
 
     history.append({"role": "assistant", "content": result["response"]})
     save_user_history(user_id, history)
