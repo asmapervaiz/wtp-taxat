@@ -16,7 +16,6 @@ from typing import Optional
 import json
 from fastapi.responses import JSONResponse
 from openai import OpenAI
-
 from dotenv import load_dotenv
 load_dotenv()
 # openai.api_key = os.getenv("API_KEY")
@@ -272,15 +271,93 @@ def get_user_history(user_id: str):
             return pickle.load(f)
     return []
 
+
+COUNTRY_SIMILARITY_THRESHOLDS = {
+    "pakistan": 0.65,
+    "canada": 0.63,
+    "usa": 0.55,
+    "uk": 0.52,
+    # Add more countries as needed
+}
+
 def save_user_history(user_id: str, history):
     path = os.path.join(SESSIONS_DIR, f"{user_id}.pkl")
     with open(path, "wb") as f:
         pickle.dump(history, f)
 
-def extract_chunks_from_pdfs(country):
-    # Remove any leading or trailing spaces from the country name
-    country = country.strip()
+# def extract_chunks_from_pdfs(country):
+#     # Remove any leading or trailing spaces from the country name
+#     country = country.strip()
 
+#     folder_path = os.path.join("books", country)
+#     if not os.path.exists(folder_path):
+#         print(f"❌ Folder not found for country: {country}")
+#         return [], []
+
+#     chunks, metadata = [], []
+
+#     for file in os.listdir(folder_path):
+#         if file.endswith(".pdf"):
+#             path = os.path.join(folder_path, file)
+#             try:
+#                 reader = PdfReader(path)
+#                 text = ""
+#                 for page in reader.pages:
+#                     text += page.extract_text() or ""
+
+#                 words = text.split()
+#                 for i in range(0, len(words), CHUNK_SIZE - CHUNK_OVERLAP):
+#                     chunk = " ".join(words[i:i + CHUNK_SIZE])
+#                     chunks.append(chunk)
+#                     metadata.append({"book": file})
+
+#             except Exception as e:
+#                 print(f"⚠️ Error reading {file}: {e}")
+
+#     return chunks, metadata
+
+
+# def embed_texts(texts):
+#     print("🔗 Creating embeddings...")
+#     response = client.embeddings.create(input=texts, model=EMBED_MODEL)
+#     return np.array([d.embedding for d in response.data])
+
+
+# def search_faiss_index(query, index, chunks, metadata, top_k=3, threshold=1.0):
+#     print("🔍 Searching for top chunks...")
+#     query_embedding = client.embeddings.create(
+#         input=[query],
+#         model=EMBED_MODEL
+#     ).data[0].embedding
+
+#     query_embedding = np.array(query_embedding).reshape(1, -1)
+#     distances, indices = index.search(query_embedding, top_k)
+
+#     top_chunks = []
+#     for dist, i in zip(distances[0], indices[0]):
+#         if dist < threshold and i < len(chunks):
+#             top_chunks.append((metadata[i]["book"], chunks[i]))
+#     return top_chunks
+
+# def query_gpt(user_query, history=None):
+#     user_query = (
+#         f"Answer the following question as accurately as possible:\n\n{user_query}\n\n"
+#         f"If unsure, try to answer using your general knowledge."
+#     )
+
+#     print("🤖 Querying GPT-4o...")
+
+#     messages = history if history else []
+#     messages = messages + [{"role": "user", "content": user_query}]
+
+#     response = client.chat.completions.create(
+#         model=CHAT_MODEL,
+#         messages=messages,
+#         temperature=0.3
+#     )
+#     return response.choices[0].message.content.strip()
+
+def extract_chunks_from_pdfs(country):
     folder_path = os.path.join("books", country)
     if not os.path.exists(folder_path):
         print(f"❌ Folder not found for country: {country}")
@@ -309,27 +386,70 @@ def extract_chunks_from_pdfs(country):
     return chunks, metadata
 
 
-def embed_texts(texts):
+
+# def embed_texts(texts):
+#     print("🔗 Creating embeddings...")
+#     response = client.embeddings.create(input=texts, model=EMBED_MODEL)
+#     return np.array([d.embedding for d in response.data])
+
+def embed_texts(texts, batch_size=100):
     print("🔗 Creating embeddings...")
-    response = client.embeddings.create(input=texts, model=EMBED_MODEL)
-    return np.array([d.embedding for d in response.data])
+    all_embeddings = []
 
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        response = client.embeddings.create(input=batch, model=EMBED_MODEL)
+        embeddings = [d.embedding for d in response.data]
+        all_embeddings.extend(embeddings)
 
-def search_faiss_index(query, index, chunks, metadata, top_k=3, threshold=1.0):
-    print("🔍 Searching for top chunks...")
+    return np.array(all_embeddings)
+# def search_faiss_index(query, index, chunks, metadata, top_k=3, threshold=1.0):
+#     print("🔍 Searching for top chunks...")
+#     query_embedding = client.embeddings.create(
+#         input=[query],
+#         model=EMBED_MODEL
+#     ).data[0].embedding
+
+#     query_embedding = np.array(query_embedding).reshape(1, -1)
+#     distances, indices = index.search(query_embedding, top_k)
+
+#     top_chunks = []
+#     for dist, i in zip(distances[0], indices[0]):
+#         if dist < threshold and i < len(chunks):
+#             top_chunks.append((metadata[i]["book"], chunks[i]))
+#     print(f"Top chunks:{top_chunks}")
+#     return top_chunks
+
+def search_faiss_index(query, index, chunks, metadata, top_k=3, min_similarity=0.61):
+    print("🔍 Searching for top chunks (cosine similarity)...")
+
     query_embedding = client.embeddings.create(
         input=[query],
         model=EMBED_MODEL
     ).data[0].embedding
 
     query_embedding = np.array(query_embedding).reshape(1, -1)
+    query_embedding = query_embedding / np.linalg.norm(query_embedding, axis=1, keepdims=True)
+
     distances, indices = index.search(query_embedding, top_k)
+    print("📏 FAISS cosine similarities:", distances)
+    print("📚 FAISS indices:", indices)
+
+    print("📏 FAISS cosine similarities:", distances)
+    print("📚 FAISS indices:", indices)
 
     top_chunks = []
-    for dist, i in zip(distances[0], indices[0]):
-        if dist < threshold and i < len(chunks):
+    for sim, i in zip(distances[0], indices[0]):
+        print(f"🔍 Match: sim={sim:.4f}, file={metadata[i]['book']}")
+        if sim >= min_similarity and i < len(chunks):  # 🧠 Only use results with strong match
             top_chunks.append((metadata[i]["book"], chunks[i]))
+            print(f"Similarity:{sim}")
+            print(f"Top Chunks:{top_chunks}")
+
+    print(f"✅ Found {len(top_chunks)} relevant chunks.")
+    print(f"Top Chunks:{top_chunks}")
     return top_chunks
+
 
 def query_gpt(user_query, history=None):
     user_query = (
@@ -348,7 +468,6 @@ def query_gpt(user_query, history=None):
         temperature=0.3
     )
     return response.choices[0].message.content.strip()
-
 
 def get_response_from_general_knowledge(user_query, country, history=None):
     
@@ -442,7 +561,6 @@ def get_response_from_general_knowledge(user_query, country, history=None):
     return res
 
 
-
 def get_response_from_books(user_query, country, history=None):
     print(f"\n🌍 Handling query for country: {country}")
     os.makedirs("faiss_indexes", exist_ok=True)
@@ -458,6 +576,8 @@ def get_response_from_books(user_query, country, history=None):
     else:
         print("📄 Index not found. Generating...")
         chunks, metadata = extract_chunks_from_pdfs(country)
+        print(f"📄 Total chunks loaded for {country}: {len(chunks)}")
+        print("📚 Books included:", list(set(meta['book'] for meta in metadata)))
         if not chunks:
             
             print("⚠️ No relevant chunks found. Falling back to general knowledge.")
@@ -497,24 +617,41 @@ def get_response_from_books(user_query, country, history=None):
             #     "reference": refrence
             # }
 
-        embeddings = embed_texts(chunks)
-        index = faiss.IndexFlatL2(embeddings.shape[1])
+        embeddings = embed_texts(chunks,batch_size=100)
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)  # Normalize
+
+        index = faiss.IndexFlatIP(embeddings.shape[1])  # Cosine similarity
         index.add(embeddings)
 
         faiss.write_index(index, index_path)
         with open(metadata_path, "wb") as f:
             pickle.dump((chunks, metadata), f)
+            
+    if country.lower() not in user_query.lower():
+        query_with_context = f"{user_query} in {country}"
+    else:
+        query_with_context = user_query
 
-    top_chunks = search_faiss_index(user_query, index, chunks, metadata)
+    min_similarity = COUNTRY_SIMILARITY_THRESHOLDS.get(country.lower(), 0.62)  # default fallback
+    top_chunks = search_faiss_index(query_with_context, index, chunks, metadata, min_similarity=min_similarity)
+    # top_chunks = search_faiss_index(query_with_context, index, chunks, metadata)
+
+    # top_chunks = search_faiss_index(user_query, index, chunks, metadata)
 
     if top_chunks:
         combined = "\n---\n".join([f"From {book}:\n{chunk}" for book, chunk in top_chunks])
         book_names = list(set(book for book, _ in top_chunks))
-
+        
         prompt = (
-            f"Use the following content extracted from the book(s) {', '.join(book_names)} "
-            f"to answer the user query:\n\nUser Query: {user_query}\n\n{combined}"
-        )
+                f"As a tax assistant for {country}, answer the user's question using the content below. "
+                f"Do not mention the source explicitly in your response. Just provide a clear, natural answer:\n\n"
+                f"User: {user_query}\n\nRelevant Reference Material:\n{combined}"
+            )
+
+        # prompt = (
+        #     f"Use the following content extracted from the book(s) {', '.join(book_names)} "
+        #     f"to answer the user query:\n\nUser Query: {user_query}\n\n{combined}"
+        # )
 
         response = query_gpt(prompt, history=history)
         return {
@@ -575,7 +712,6 @@ def get_response_from_books(user_query, country, history=None):
     # }
 
 
-   
 from fastapi import FastAPI, HTTPException
 from pathlib import Path
 
